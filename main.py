@@ -23,10 +23,17 @@ alleles = ['A']
 with open('multiple_conseq.json') as fh:
     for line in fh:
         annotation = json.loads(line.rstrip())
-        tconseq = extract_consequences(annotation, alleles, 'transcript')
-        pp.pprint(tconseq)
+        # tconseq = extract_consequences(annotation, alleles, 'transcript')
+        # pp.pprint(tconseq)
 
 
-parser = VepJsonParser("ranks.txt", verbose=False)
-pp.pprint(parser.get_consequence_map())
-# parser.set_annotation()
+        parser = VepJsonParser("ranks.txt", verbose=False)
+        # pp.pprint(parser.consequence_rank_map())
+        parser.set_annotation(annotation)
+        
+        parser.set('is_multi_allelic', False)
+        parser.adsp_rank_and_sort_consequences()
+
+        pp.pprint(parser.get_annotation())
+
+

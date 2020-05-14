@@ -1,7 +1,22 @@
 
 
 from collections import Counter, OrderedDict
-import csv
+import csv, datetime
+import sys
+
+def warning(*objs, **kwargs):
+    '''
+    print messages to stderr
+    '''
+    fh = sys.stderr
+    flush = False
+    if kwargs:
+        if 'file' in kwargs: fh = kwargs['file']
+        if 'flush' in kwargs: flush = kwargs['flush']
+
+    print('[' + str(datetime.datetime.now()) + ']\t', *objs, file=fh)
+    if flush:
+        fh.flush()
 
 def qw(s, returnTuple=False):
     '''
@@ -13,12 +28,13 @@ def qw(s, returnTuple=False):
         return tuple(s.split())
     else:
         return s.split()
-
 '''
 utils for parsing VEP JSON output
 '''
 # pylint: disable=line-too-long,invalid-name
 
+from collections import Counter, OrderedDict
+import csv
 
 class VepJsonParser(object):
     ''' class to organize utils for parsing VEP JSON output '''
@@ -35,7 +51,7 @@ class VepJsonParser(object):
         True if found '''
         matches = [value for value in conseqStr.split(',') 
                        if value in self.__codingConsequences]
-        if len(matches > 0):
+        if len(matches) > 0:
             return True
         else:
             return False
@@ -44,15 +60,14 @@ class VepJsonParser(object):
     def parse_ranking_file(self, fileName):
         ''' parse ranking file and save as dictionary lookup '''
         if self._verbose:
-            1
-            # warning("Parsing ranking file:,", fileName)
+            warning("Parsing ranking file:,", fileName)
 
         result = OrderedDict()
         with open(fileName, 'r') as fh:
             reader = csv.DictReader(fh, delimiter='\t')
             for row in reader:
                 conseq = row['consequence']
-                result[conseq]  = {}
+                result[conseq] = {}
                 result[conseq]['coding'] = self.is_coding_consequence(conseq)
                 result[conseq]['rank'] = row['adsp_ranking']
                 result[conseq]['impact'] = row['adsp_impact']
@@ -64,6 +79,7 @@ class VepJsonParser(object):
         ''' match list of consequences against those in the
         ranking file and return ranking info associated with match;
         throw error if not found '''
+
         if len(terms) == 0:
             return self.get_conseq_rank(terms[0])
 
@@ -71,23 +87,22 @@ class VepJsonParser(object):
             conseqList = conseqStr.split(',')
             if is_equivalent_list(terms, conseqList):
                 return self.get_conseq_rank(conseqStr) 
-            else:
-                raise IndexError('Consequence combination ' + ','.join(terms)
-                                     + ' not found in ranking file.')
+
+        raise IndexError('Consequence combination ' + ','.join(terms)
+            + ' not found in ranking file.')
 
 
-    def assign_consequence_rank(self, conseq):
+    def assign_adsp_consequence_rank(self, conseq):
         ''' assemble consequence terms into ordered comma delim string
         and lookup in ranking table; add rank to consequence annotation;
         backup old impact information
         '''
         terms = conseq['consequence_terms']
         matchingConseq = self.find_matching_consequence(terms) 
-
         conseq['vep_impact'] =  conseq['impact']
         conseq['impact'] = matchingConseq['impact']
         conseq['rank'] = matchingConseq['rank']
-        conseq['is_coding'] = matchingConseq['is_coding']
+        conseq['is_coding'] = matchingConseq['coding']
 
         return conseq
         
@@ -99,10 +114,21 @@ class VepJsonParser(object):
 
 
 
-    def rank_and_sort_consequences(self):
-        ''' takes an array of consequences (too which adsp ranking
-        has been applied, and reorders) '''
-        pass
+    def adsp_rank_and_sort_consequences(self):
+        ''' applies ADSP ranking to consequence, re orders the array and
+        and saves newly ordered list
+        '''
+        conseqTypes = qw('transcript regulatory_feature intergenic')
+        adsp_ranked_consequences = {}
+        # Use OrderedDict; this way adsp_ranked_consequences[0][0] is the most severe conseqence
+        for ctype in conseqTypes:
+            conseqs = self.get(ctype + '_consequences')
+            if conseqs:
+                adsp_ranked_consequences[ctype + '_consequences'] = self.get_adsp_ranked_consequences(ctype)
+        self.set('adsp_ranked_consequences', adsp_ranked_consequences)
+
+        
+
 
     # =========== modifiers ==================
     def set_annotation(self, annotation):
@@ -118,12 +144,14 @@ class VepJsonParser(object):
 
     # =========== accessors ==================
     def coding_consequences(self):
-        ''' return coding variants'''
+        ''' return list of coding consequence'''
         return self.__codingConsequences
+
 
     def consequence_rank_map(self):
         ''' return consequence rankings '''
         return self._consequenceRankings
+
 
     def get_conseq_rank(self, conseq):
         ''' return value from consequence rank map for the specified
@@ -134,14 +162,23 @@ class VepJsonParser(object):
             raise IndexError('Consequence ' + conseq + ' not found in ranking file.')
 
 
-    def get_ranked_consequences(self, alleles, conseqType):
-        ''' extract consequences and apply ranking;
-        convert from list to list of dicts, keyed on allele'''
+    def get_adsp_ranked_consequences(self, conseqType):
+        ''' extract consequences and apply ranking and sort,
+        convert from list to list of dicts, keyed on allele       
+        to ensure consequences are sorted per allele'''
+        
+        result = None
+        consequences = self.get(conseqType + '_consequences')
+
         result = {}
-        consequences = self._annotation[conseqType + '_consequences']
-        for a in alleles:
-            result[a] = [self.assign_consequence_rank(conseq) for conseq in consequences
-                         if conseq['variant_allele'] == a]
+        for conseq in consequences:
+            # need to build the hash pulling the key out of variant allele &
+            # appending to the list
+            va = conseq['variant_allele']
+            if va in result:
+                result[va].append(self.assign_adsp_consequence_rank(conseq))
+            else:
+                result[va] = [self.assign_adsp_consequence_rank(conseq)]
 
         return result
 
@@ -156,12 +193,23 @@ class VepJsonParser(object):
         return cv[0]['frequencies'] if 'frequencies' in cv[0] else None
 
 
+    def get_consequences(self, key):
+        ''' special getter for consequences b/c fields may be missing; don't want
+        to throw error '''
+        if key in self._annotation:
+            return self._annotation[key]
+        else:
+            return None
+
+
     def get(self, key): 
         ''' get the annotation value associated with the key '''
         self.__verify_annotation()
 
         if key == 'frequencies':
             return self.get_frequencies()
+        if 'consequences' in key:
+            return self.get_consequences(key)
         else:
             return self._annotation[key]
 
@@ -171,15 +219,15 @@ class VepJsonParser(object):
         return self._annotation
             
 
-# ======================
-# Functions
-# ======================
-
-
-def get_most_severe_consequence(conseq):
-    ''' returns first element of the conseq array '''
-    return conseq[0]
-
+    def get_most_severe_adsp_consequence(self):
+        ''' return most severe transcript consequence
+            otherwise, regulatory feature, followed by intergenic '''
+        conseqTypes = qw('transcript regulatory_feature intergenic')
+        conseq = self.get('adsp_ranked_consequences')
+        for ctype in conseqTypes:        
+            if ctype + '_consequences' in conseq:
+                return conseq[ctype + '_consequences'][0]
+        return None
 
 
 # --------------
